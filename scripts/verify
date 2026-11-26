@@ -2,13 +2,14 @@
 # Run the real screensaver and see it working, without touching the owner's display, art/,
 # build/ or settings.
 #
-#   scripts/verify [interval-seconds]    default 5 (the shortest the app allows)
+#   scripts/verify [interval-seconds]    default 8: long enough for each caption to be fully up
+#                                        before the next slide starts
 #
 # Builds the viewer into a temporary folder, makes three stand-in covers (distinct colours,
 # named like the real ones), and runs it offscreen at real speed with --no-focus-exit. It grabs
 # what the window shows while each slide is fully up, and writes the frames and LEDGER.md to
-# .scratch/verify/<time>/. Exits non-zero if the app fails, a frame is missing, or the first three
-# slides it logs aren't the three stand-ins, each once.
+# .scratch/verify/<time>/. Exits non-zero if the app fails, a frame is missing, a frame's caption
+# isn't showing, or the first three slides it logs aren't the three stand-ins, each once.
 #
 # What it can't show: the cover and its blurred backdrop are drawn through MultiEffect, which Qt's
 # offscreen platform leaves blank in a grab. The frames show the black stage, the vignette and the
@@ -17,8 +18,14 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-interval=${1:-5}
-fade=3                          # Screensaver.qml's fadeMs, in seconds
+interval=${1:-8}
+fade_ms=3000                    # Screensaver.qml's fadeMs
+caption_ms=2500                 # its captionFade: it waits fadeMs, then takes this long to come up
+caption_min=100                 # a frame's brightest pixel with the caption fully up (it is ~140)
+if (( interval * 1000 < fade_ms + caption_ms + 1000 )); then
+  echo "An interval of ${interval} s ends each slide before its caption is fully up; use at least $(( (fade_ms + caption_ms + 1999) / 1000 ))." >&2
+  exit 1
+fi
 evidence=".scratch/verify/$(date +%Y%m%dT%H%M%S)"
 work=$(mktemp -d /tmp/mss-test-verify-XXXX)
 trap 'rm -rf "$work"' EXIT
@@ -35,10 +42,10 @@ for cover in "${covers[@]}"; do
   magick -size 1600x1600 "xc:${cover##*:}" "$work/art/${cover%%:*}.png"
 done
 
-# One grab while each slide is fully up: the first after its fade-in, the next ones after each
-# change plus its crossfade.
+# One grab while each slide and its caption are fully up: half a second after the caption has
+# finished coming up, and before the next slide starts.
 times=()
-for i in 0 1 2; do times+=($(( (i * interval + fade + 1) * 1000 ))); done
+for i in 0 1 2; do times+=($(( i * interval * 1000 + fade_ms + caption_ms + 500 ))); done
 grab_at=$(IFS=,; echo "${times[*]}")
 
 echo "== run (about $(( times[2] / 1000 )) s at real speed)"
@@ -67,6 +74,7 @@ for i in 0 1 2; do
   size=$(magick identify -format '%wx%h' "$frame")
   brightest=$(magick "$frame" -format '%[fx:int(255*maxima)]' info:)
   echo "| $(basename "$frame") | $size | $brightest |" >> "$evidence/LEDGER.md"
+  (( brightest >= caption_min )) || problems+=("frame $i shows no caption (brightest pixel $brightest, at least $caption_min expected)")
 done
 # The app logs each slide it shows (grab mode only). Three slide changes' worth of time must show
 # all three stand-ins, each once, in some order.

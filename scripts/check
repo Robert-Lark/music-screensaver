@@ -18,7 +18,9 @@ CXXFLAGS_STRICT=(-Wall -Wextra -Werror)
 RUFF=(uvx --quiet ruff@0.17.0 check --isolated --select "F,E9,B" --line-length 100)
 QMLLINT=$(command -v qmllint6 || command -v qmllint || echo /usr/lib/qt6/bin/qmllint)
 SHELLCHECK=$(command -v shellcheck || mise which shellcheck)
-SHELL_FILES=(bin/launch-screensaver scripts/check scripts/verify scripts/probe.sh .githooks/pre-commit)
+# What the checks cover, found the same way the size guard finds files, so a new file is checked
+# from its first commit. canary/ holds the planted violations and is checked by the canary only.
+SIZE_FOLDERS=(app bin scripts)
 
 step() { printf '== %s\n' "$1"; }
 fail() { printf 'The %s check failed: %s\n' "$1" "$2" >&2; exit 1; }
@@ -29,28 +31,65 @@ qml_warnings() { "$QMLLINT" "$1" 2>&1 | grep -c '^Warning:' || true; }
 # Compile one C++ file with the strict flags (the canary's stand-in for the build).
 strict_compile() { g++ "${CXXFLAGS_STRICT[@]}" -std=c++17 -fsyntax-only "$1"; }
 
-allowed() { jq -r "$1 // 0" guards-allowlist.json; }
-allowed_on_main() { git show origin/main:guards-allowlist.json 2>/dev/null | jq -r "$1 // 0" || echo 0; }
+# Tracked and new files, existing ones only (a deleted file is still listed until it is staged).
+listed() { local f; while IFS= read -r f; do [[ -f $f ]] && printf '%s\n' "$f"; done < <(git ls-files --cached --others --exclude-standard "$@"); }
+qml_files() { listed '*.qml' | grep -v '^canary/'; }
+python_files() { listed '*.py' | grep -v '^canary/'; }
+# Shell scripts: *.sh, and any file whose first line runs bash or sh.
+shell_files() {
+  local f
+  while IFS= read -r f; do
+    [[ $f == canary/* ]] && continue
+    if [[ $f == *.sh ]] || head -n1 "$f" | grep -qE '^#!.*\b(ba)?sh\b'; then printf '%s\n' "$f"; fi
+  done < <(listed)
+}
 
-guard_sizes() {
+allowed() { jq -r "$1 // 0" guards-allowlist.json; }
+MAIN_ALLOWLIST=$(git show origin/main:guards-allowlist.json 2>/dev/null || true)
+# main's count for a key, or nothing when main has no allowlist yet (the guards are landing).
+allowed_on_main() { [[ -n $MAIN_ALLOWLIST ]] && jq -r "$1 // 0" <<< "$MAIN_ALLOWLIST"; }
+excused_for_size() { jq -e --arg f "$1" '.oversizeFiles | index($f) != null' guards-allowlist.json >/dev/null; }
+
+# The size guard over the files given, one per line on stdin.
+size_problems() {
   local file tokens problems=0
   while IFS= read -r file; do
     tokens=$(( $(wc -c < "$file") / 4 ))
-    if (( tokens > MAX_TOKENS )); then
+    if (( tokens > MAX_TOKENS )) && ! excused_for_size "$file"; then
       echo "  $file: $tokens tokens, over the $MAX_TOKENS-token limit. Split it." >&2
       problems=1
+    elif (( tokens <= MAX_TOKENS )) && excused_for_size "$file"; then
+      echo "  $file: now under the size limit. Remove it from oversizeFiles." >&2
+      problems=1
     fi
-  done < <(git ls-files --cached --others --exclude-standard app bin scripts)
+  done
+  return "$problems"
+}
+
+guard_sizes() {
+  local file problems=0
+  size_problems < <(listed "${SIZE_FOLDERS[@]}") || problems=1
+  while IFS= read -r file; do
+    [[ -z $file ]] && continue
+    if [[ ! -f $file ]]; then echo "  $file: in oversizeFiles but gone. Remove it." >&2; problems=1; fi
+    if [[ -n $MAIN_ALLOWLIST ]] && ! jq -e --arg f "$file" '.oversizeFiles | index($f) != null' <<< "$MAIN_ALLOWLIST" >/dev/null; then
+      echo "  $file: added to oversizeFiles. The allowlist only shrinks: split the file." >&2; problems=1
+    fi
+  done < <(jq -r '.oversizeFiles[]' guards-allowlist.json)
   return "$problems"
 }
 
 guard_qml() {
-  local file=app/Screensaver.qml key='.qmllintWarnings["app/Screensaver.qml"]'
-  local found limit base
-  found=$(qml_warnings "$file"); limit=$(allowed "$key"); base=$(allowed_on_main "$key")
-  if (( found > limit )); then echo "  $file: $found qmllint warnings, $limit allowed. Fix the new ones." >&2; return 1; fi
-  if (( found < limit )); then echo "  $file: $found qmllint warnings now. Lower qmllintWarnings to $found." >&2; return 1; fi
-  if (( limit > base && base > 0 )); then echo "  qmllintWarnings went up. The allowlist only shrinks." >&2; return 1; fi
+  local file key found limit base problems=0
+  while IFS= read -r file; do
+    key=".qmllintWarnings[\"$file\"]"
+    found=$(qml_warnings "$file"); limit=$(allowed "$key"); base=$(allowed_on_main "$key" || true)
+    if (( found > limit )); then echo "  $file: $found qmllint warnings, $limit allowed. Fix the new ones." >&2; problems=1
+    elif (( found < limit )); then echo "  $file: $found qmllint warnings now. Lower qmllintWarnings to $found." >&2; problems=1
+    fi
+    if [[ -n $base ]] && (( limit > base )); then echo "  $file: qmllintWarnings went up. The allowlist only shrinks." >&2; problems=1; fi
+  done < <(qml_files)
+  return "$problems"
 }
 
 canary() {
@@ -61,7 +100,8 @@ canary() {
   (( $(qml_warnings canary/planted.qml) > 0 )) || missed+=("qmllint")
   big=$(mktemp -d /tmp/mss-test-canary-XXXX)
   head -c $(( (MAX_TOKENS + 1) * 4 )) /dev/zero | tr '\0' x > "$big/oversize"
-  (( $(wc -c < "$big/oversize") / 4 > MAX_TOKENS )) || missed+=("file size")
+  # The size guard itself, on a file over the limit.
+  size_problems <<< "$big/oversize" 2>/dev/null && missed+=("file size")
   rm -rf "$big"
   if (( ${#missed[@]} )); then fail canary "these went unnoticed: ${missed[*]}"; fi
   echo "Canary: all 5 planted violations caught."
@@ -79,8 +119,11 @@ build() {
 }
 
 main() {
-  step shellcheck; "$SHELLCHECK" "${SHELL_FILES[@]}" || fail shellcheck "see above"
-  step ruff; "${RUFF[@]}" scripts/ || fail ruff "see above"
+  local shells pythons
+  mapfile -t shells < <(shell_files); mapfile -t pythons < <(python_files)
+  step shellcheck; "$SHELLCHECK" "${shells[@]}" || fail shellcheck "see above"
+  echo "${#shells[@]} shell scripts pass."
+  step ruff; "${RUFF[@]}" "${pythons[@]}" || fail ruff "see above"
   step guards; { guard_sizes && guard_qml; } || fail guards "see above"
   echo "Guards pass."
   step canary; canary
