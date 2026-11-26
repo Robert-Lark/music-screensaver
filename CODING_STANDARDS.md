@@ -7,8 +7,8 @@ This project follows the shared standards in `~/Projects/docs/coding-standards.m
 Reviewers skip these: `scripts/check` enforces them, and its canary proves each still catches a planted violation.
 
 - **C++:** the build runs with `-Wall -Wextra -Werror`.
-- **QML:** `qmllint`. `app/Screensaver.qml` reads the context properties `main.cpp` sets, which qmllint counts as warnings inside the `Slide` component; their count sits in `guards-allowlist.json` and only shrinks. qmllint doesn't flag them at the root of the file, so a new context property is a review point, not a check.
-- **Shell:** `shellcheck` on the launcher, the scripts and the hook.
+- **QML:** `qmllint` on every QML file, each with its own warning count. `app/Screensaver.qml` reads the context properties `main.cpp` sets, which qmllint counts as warnings inside the `Slide` component; their count sits in `guards-allowlist.json` and only shrinks. qmllint doesn't flag them at the root of the file, so a new context property is a review point, not a check.
+- **Shell:** `shellcheck` on every shell script: `*.sh` and any file that starts with a bash or sh line, found with `git ls-files` (so a new one is checked from its first commit). ruff, likewise, on every Python file.
 - **Python** (the one-off collection scripts): ruff's real-error rules (`F`, `E9`, `B`); their style is left as it is.
 - **File size:** at most 5,500 tokens per file under `app/`, `bin/` and `scripts/`.
 

@@ -11,7 +11,10 @@ darkened copy of the cover. Any key, click, scroll or mouse movement closes it.
 - `bin/launch-screensaver` — starts one viewer per monitor, the way Omarchy's
   own launcher does. Installed as `~/bin/omarchy-launch-screensaver`, which is
   ahead of `/usr/share/omarchy/bin` on PATH, so Omarchy's idle timer and menu
-  use it. Falls back to Omarchy's screensaver if the binary or art is missing.
+  use it. The idle timer starts it through `bash -lc`, a non-interactive login
+  shell, so `~/bin` has to go on PATH in `~/.bashrc` *above* its "not running
+  interactively" return. Falls back to Omarchy's screensaver if the binary or
+  art is missing.
 - `scripts/` — how the art was collected (read-only on the drive):
   `probe.sh` (embedded art sizes), `match_inbox.py` (links Inbox images to
   Library albums through `Manifest.db`), `candidates.py`, `copy_covers.py`.
