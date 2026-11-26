@@ -1,5 +1,5 @@
 // One fullscreen slideshow window. Context properties from main.cpp:
-//   imageUrls, imageCaptions (already shuffled), intervalMs.
+//   imageUrls, imageCaptions (already shuffled), intervalMs, logSlides.
 import QtQuick
 import QtQuick.Window
 import QtQuick.Effects
@@ -50,11 +50,15 @@ Window {
         back.fadeIn()
         front.fadeOut()
         const t = front; front = back; back = t
+        logSlide(front.index)
     }
+
+    function logSlide(i) { if (logSlides) console.info("slide: " + imageCaptions[i]) }
 
     Component.onCompleted: {
         order = [...Array(count).keys()]   // main.cpp already shuffled the list
         slideA.show(order[0])
+        logSlide(order[0])
     }
 
     Timer { interval: intervalMs; running: true; repeat: true; onTriggered: win.advance() }

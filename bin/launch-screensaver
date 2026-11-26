@@ -16,6 +16,8 @@ BIN="$PROJECT/build/album-art-screensaver"
 ART_DIR="$PROJECT/art"
 INTERVAL=60
 CONF="$HOME/.config/album-art-screensaver.conf"
+# The owner's settings file, read at run time.
+# shellcheck source=/dev/null
 [[ -f $CONF ]] && source "$CONF"
 
 ORIGINAL=/usr/share/omarchy/bin/omarchy-launch-screensaver

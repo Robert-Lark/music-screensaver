@@ -1,0 +1,8 @@
+#!/bin/sh
+# Every commit passes the static checks (seconds). The build runs in `scripts/check`, before every
+# PR. Turned on per clone with: git config core.hooksPath .githooks
+#
+# Git hands a hook the repository it is committing to (GIT_DIR, GIT_INDEX_FILE and the rest).
+# Clear them, so nothing the checks run can act on this repository by mistake.
+for name in $(git rev-parse --local-env-vars); do unset "$name"; done
+exec scripts/check --static

@@ -14,7 +14,7 @@ for op, ip, lp in db.execute("select original_path, inbox_path, library_path fro
 for op, to in db.execute("select original_path, to_path from rehomes"):
     if op in dest: dest[op] = (dest[op][0], to)
 audio_dirs = collections.defaultdict(set)  # inbox folder -> library album folders
-for op, kind, ip in db.execute("select original_path, kind, inbox_path from files where kind='audio'"):
+for op, _kind, ip in db.execute("select original_path, kind, inbox_path from files where kind='audio'"):
     lp = dest.get(op, (ip, ""))[1]
     audio_dirs[os.path.dirname(ip)].add(os.path.dirname(lp) if lp.startswith("Library/") else "(not in library)")
 rx = re.compile(r"^(\d+)t(\d+)t[^t]*Bt(.*)$")

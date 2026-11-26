@@ -4,3 +4,5 @@ art/
 data/
 # Build output.
 build/
+# Verify runs: frames and ledgers.
+.scratch/
