@@ -1,0 +1,91 @@
+#!/bin/bash
+# Every check, stopping at the first that fails.
+#
+#   scripts/check            static checks, then the build with warnings as errors
+#   scripts/check --static   static checks only (seconds; the pre-commit hook)
+#
+# Static: shellcheck, ruff (real errors only: the scripts are one-off collection tools), qmllint,
+# the guards (file size, qmllint warnings) and the canary. The build goes to a temporary folder,
+# never to build/, which the installed launcher runs.
+#
+# guards-allowlist.json holds what broke a guard when the guards landed. It only shrinks: no new
+# entry or higher count than origin/main has, and a fixed entry goes in the change that fixed it.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+MAX_TOKENS=5500
+CXXFLAGS_STRICT=(-Wall -Wextra -Werror)
+RUFF=(uvx --quiet ruff@0.17.0 check --isolated --select "F,E9,B" --line-length 100)
+QMLLINT=$(command -v qmllint6 || command -v qmllint || echo /usr/lib/qt6/bin/qmllint)
+SHELLCHECK=$(command -v shellcheck || mise which shellcheck)
+SHELL_FILES=(bin/launch-screensaver scripts/check scripts/verify scripts/probe.sh .githooks/pre-commit)
+
+step() { printf '== %s\n' "$1"; }
+fail() { printf 'The %s check failed: %s\n' "$1" "$2" >&2; exit 1; }
+
+# How many warnings qmllint gives a QML file.
+qml_warnings() { "$QMLLINT" "$1" 2>&1 | grep -c '^Warning:' || true; }
+
+# Compile one C++ file with the strict flags (the canary's stand-in for the build).
+strict_compile() { g++ "${CXXFLAGS_STRICT[@]}" -std=c++17 -fsyntax-only "$1"; }
+
+allowed() { jq -r "$1 // 0" guards-allowlist.json; }
+allowed_on_main() { git show origin/main:guards-allowlist.json 2>/dev/null | jq -r "$1 // 0" || echo 0; }
+
+guard_sizes() {
+  local file tokens problems=0
+  while IFS= read -r file; do
+    tokens=$(( $(wc -c < "$file") / 4 ))
+    if (( tokens > MAX_TOKENS )); then
+      echo "  $file: $tokens tokens, over the $MAX_TOKENS-token limit. Split it." >&2
+      problems=1
+    fi
+  done < <(git ls-files --cached --others --exclude-standard app bin scripts)
+  return "$problems"
+}
+
+guard_qml() {
+  local file=app/Screensaver.qml key='.qmllintWarnings["app/Screensaver.qml"]'
+  local found limit base
+  found=$(qml_warnings "$file"); limit=$(allowed "$key"); base=$(allowed_on_main "$key")
+  if (( found > limit )); then echo "  $file: $found qmllint warnings, $limit allowed. Fix the new ones." >&2; return 1; fi
+  if (( found < limit )); then echo "  $file: $found qmllint warnings now. Lower qmllintWarnings to $found." >&2; return 1; fi
+  if (( limit > base && base > 0 )); then echo "  qmllintWarnings went up. The allowlist only shrinks." >&2; return 1; fi
+}
+
+canary() {
+  local missed=() big
+  "${RUFF[@]}" canary/planted.py >/dev/null 2>&1 && missed+=("ruff")
+  "$SHELLCHECK" canary/planted.sh >/dev/null 2>&1 && missed+=("shellcheck")
+  strict_compile canary/planted.cpp >/dev/null 2>&1 && missed+=("warnings as errors")
+  (( $(qml_warnings canary/planted.qml) > 0 )) || missed+=("qmllint")
+  big=$(mktemp -d /tmp/mss-test-canary-XXXX)
+  head -c $(( (MAX_TOKENS + 1) * 4 )) /dev/zero | tr '\0' x > "$big/oversize"
+  (( $(wc -c < "$big/oversize") / 4 > MAX_TOKENS )) || missed+=("file size")
+  rm -rf "$big"
+  if (( ${#missed[@]} )); then fail canary "these went unnoticed: ${missed[*]}"; fi
+  echo "Canary: all 5 planted violations caught."
+}
+
+build() {
+  local out
+  out=$(mktemp -d /tmp/mss-test-build-XXXX)
+  qmake6 app/screensaver.pro -o "$out/Makefile" -after \
+    "DESTDIR=$out" "OBJECTS_DIR=$out/obj" "MOC_DIR=$out/moc" "RCC_DIR=$out/rcc" \
+    "QMAKE_CXXFLAGS+=${CXXFLAGS_STRICT[*]}" >/dev/null
+  make -s -C "$out" -j"$(nproc)" >/dev/null || { rm -rf "$out"; return 1; }
+  echo "Built $out/album-art-screensaver"
+  rm -rf "$out"
+}
+
+main() {
+  step shellcheck; "$SHELLCHECK" "${SHELL_FILES[@]}" || fail shellcheck "see above"
+  step ruff; "${RUFF[@]}" scripts/ || fail ruff "see above"
+  step guards; { guard_sizes && guard_qml; } || fail guards "see above"
+  echo "Guards pass."
+  step canary; canary
+  [[ ${1:-} == --static ]] && return 0
+  step build; build || fail build "the compiler reported the warnings above"
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then main "$@"; fi

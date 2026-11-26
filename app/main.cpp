@@ -11,6 +11,7 @@
 #include <QProcess>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
+#include <QQuickWindow>
 #include <QRandomGenerator>
 #include <QTimer>
 #include <QUrl>
@@ -40,6 +41,10 @@ int main(int argc, char *argv[]) {
     cli.addOption({"dir", "Folder of images.", "path"});
     cli.addOption({"interval", "Seconds each image stays up (default 60).", "seconds", "60"});
     cli.addOption({"no-focus-exit", "Don't quit when focus leaves the screensaver (for testing)."});
+    cli.addOption({"grab", "Save what the window shows as <prefix>-NN.png at each --grab-at time, "
+                           "then quit (for scripts/verify).", "prefix"});
+    cli.addOption({"grab-at", "Comma-separated milliseconds after start to grab (default 1500).", "ms",
+                   "1500"});
     cli.process(app);
 
     const QString dir = cli.value("dir");
@@ -61,10 +66,29 @@ int main(int argc, char *argv[]) {
     QQmlApplicationEngine engine;
     engine.rootContext()->setContextProperty("imageUrls", urls);
     engine.rootContext()->setContextProperty("imageCaptions", captions);
+    // In grab mode the window logs each slide it shows, for scripts/verify's ledger.
+    engine.rootContext()->setContextProperty("logSlides", cli.isSet("grab"));
     engine.rootContext()->setContextProperty("intervalMs", qMax(5, cli.value("interval").toInt()) * 1000);
     QObject::connect(&engine, &QQmlApplicationEngine::objectCreationFailed, &app,
                      [] { QCoreApplication::exit(1); }, Qt::QueuedConnection);
     engine.load(QUrl("qrc:/Screensaver.qml"));
+
+    if (cli.isSet("grab")) {
+        auto *window = qobject_cast<QQuickWindow *>(engine.rootObjects().value(0));
+        if (!window) return 1;
+        const QString prefix = cli.value("grab");
+        const QStringList times = cli.value("grab-at").split(',', Qt::SkipEmptyParts);
+        int last = 0;
+        for (int i = 0; i < times.size(); ++i) {
+            const int ms = times[i].toInt();
+            last = qMax(last, ms);
+            QTimer::singleShot(ms, &app, [window, prefix, i] {
+                const QString file = QString("%1-%2.png").arg(prefix).arg(i, 2, 10, QChar('0'));
+                if (!window->grabWindow().save(file)) qCritical("Could not save '%s'.", qUtf8Printable(file));
+            });
+        }
+        QTimer::singleShot(last + 200, &app, [] { QCoreApplication::quit(); });
+    }
 
     // Quit once focus has moved to a non-screensaver window (after a short
     // grace period while the launcher maps a window on each monitor).

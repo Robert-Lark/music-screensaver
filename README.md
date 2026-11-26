@@ -19,6 +19,14 @@ darkened copy of the cover. Any key, click, scroll or mouse movement closes it.
 ## Build
     cd app && qmake6 screensaver.pro -o ../build/Makefile && make -C ../build
 
+## Check and verify
+- `scripts/check`: shellcheck, ruff, qmllint, the file-size guard, a canary that
+  proves each still fires, and a build with warnings as errors (in a temporary
+  folder). `--static` skips the build; `.githooks/pre-commit` runs that
+  (`git config core.hooksPath .githooks` once per clone).
+- `scripts/verify`: runs the real viewer offscreen on stand-in covers and saves
+  frames and a ledger to `.scratch/verify/`. See `.claude/skills/verify/SKILL.md`.
+
 ## Use
 - Start now: `omarchy-launch-screensaver force`
 - Starts on its own after Omarchy's idle time (`idle.screensaver` in

@@ -1,0 +1,87 @@
+#!/bin/bash
+# Run the real screensaver and see it working, without touching the owner's display, art/,
+# build/ or settings.
+#
+#   scripts/verify [interval-seconds]    default 5 (the shortest the app allows)
+#
+# Builds the viewer into a temporary folder, makes three stand-in covers (distinct colours,
+# named like the real ones), and runs it offscreen at real speed with --no-focus-exit. It grabs
+# what the window shows while each slide is fully up, and writes the frames and LEDGER.md to
+# .scratch/verify/<time>/. Exits non-zero if the app fails, a frame is missing, or the first three
+# slides it logs aren't the three stand-ins, each once.
+#
+# What it can't show: the cover and its blurred backdrop are drawn through MultiEffect, which Qt's
+# offscreen platform leaves blank in a grab. The frames show the black stage, the vignette and the
+# caption of each slide (so the order, timing and captions are checked); the covers themselves
+# stay an owner check on the real display.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+interval=${1:-5}
+fade=3                          # Screensaver.qml's fadeMs, in seconds
+evidence=".scratch/verify/$(date +%Y%m%dT%H%M%S)"
+work=$(mktemp -d /tmp/mss-test-verify-XXXX)
+trap 'rm -rf "$work"' EXIT
+mkdir -p "$evidence" "$work/art"
+
+echo "== build"
+qmake6 app/screensaver.pro -o "$work/build/Makefile" -after \
+  "DESTDIR=$work/build" "OBJECTS_DIR=$work/build/obj" "MOC_DIR=$work/build/moc" "RCC_DIR=$work/build/rcc" >/dev/null
+make -s -C "$work/build" -j"$(nproc)" >/dev/null
+
+echo "== stand-in covers"
+covers=("Stand-in One - Red Album:#b03030" "Stand-in Two - Green Album:#30a040" "Stand-in Three - Blue Album:#3050c0")
+for cover in "${covers[@]}"; do
+  magick -size 1600x1600 "xc:${cover##*:}" "$work/art/${cover%%:*}.png"
+done
+
+# One grab while each slide is fully up: the first after its fade-in, the next ones after each
+# change plus its crossfade.
+times=()
+for i in 0 1 2; do times+=($(( (i * interval + fade + 1) * 1000 ))); done
+grab_at=$(IFS=,; echo "${times[*]}")
+
+echo "== run (about $(( times[2] / 1000 )) s at real speed)"
+set +e
+QT_QPA_PLATFORM=offscreen QT_FORCE_STDERR_LOGGING=1 timeout 120 "$work/build/album-art-screensaver" \
+  --dir "$work/art" --interval "$interval" --no-focus-exit --grab "$evidence/frame" --grab-at "$grab_at" \
+  > "$evidence/app.log" 2>&1
+status=$?
+set -e
+
+problems=()
+(( status == 0 )) || problems+=("the app exited with $status (see app.log)")
+{
+  echo "# Verify run $(basename "$evidence")"
+  echo
+  echo "Interval ${interval} s, grabs at ${grab_at} ms, app exit status ${status}."
+  echo
+  echo "Covers are blank in these frames: MultiEffect draws nothing offscreen (see scripts/verify)."
+  echo
+  echo "| Frame | Size | Brightest pixel (caption) |"
+  echo "| :- | :- | :- |"
+} > "$evidence/LEDGER.md"
+for i in 0 1 2; do
+  frame="$evidence/frame-0$i.png"
+  if [[ ! -f $frame ]]; then problems+=("frame $i missing"); continue; fi
+  size=$(magick identify -format '%wx%h' "$frame")
+  brightest=$(magick "$frame" -format '%[fx:int(255*maxima)]' info:)
+  echo "| $(basename "$frame") | $size | $brightest |" >> "$evidence/LEDGER.md"
+done
+# The app logs each slide it shows (grab mode only). Three slide changes' worth of time must show
+# all three stand-ins, each once, in some order.
+mapfile -t shown < <(sed -n 's/.*slide: //p' "$evidence/app.log")
+expected=$(printf '%s\n' "${covers[@]%%:*}" | sort)
+{ echo; echo "Slides shown, in order:"; printf -- '- %s\n' "${shown[@]}"; } >> "$evidence/LEDGER.md"
+if [[ $(printf '%s\n' "${shown[@]:0:3}" | sort) != "$expected" ]]; then
+  problems+=("the first three slides weren't the three stand-ins, each once: ${shown[*]:-none}")
+fi
+{
+  echo
+  if (( ${#problems[@]} )); then printf -- '- PROBLEM: %s\n' "${problems[@]}"; else echo "All frames present, and the three stand-ins were shown, each once."; fi
+} >> "$evidence/LEDGER.md"
+
+cat "$evidence/LEDGER.md"
+echo
+echo "Evidence: $evidence"
+(( ${#problems[@]} == 0 ))
