@@ -1,0 +1,10 @@
+TEMPLATE = app
+TARGET = album-art-screensaver
+QT += quick
+CONFIG += c++17
+SOURCES += main.cpp
+RESOURCES += qml.qrc
+DESTDIR = ../build
+OBJECTS_DIR = ../build/obj
+MOC_DIR = ../build/moc
+RCC_DIR = ../build/rcc

@@ -1,0 +1,6 @@
+# Album covers are other people's artwork: kept locally, not published.
+art/
+# Generated listings of the music drive and contact-sheet thumbnails.
+data/
+# Build output.
+build/

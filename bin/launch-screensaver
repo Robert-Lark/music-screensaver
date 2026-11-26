@@ -1,0 +1,75 @@
+#!/bin/bash
+# Album-art screensaver launcher. Installed as ~/bin/omarchy-launch-screensaver,
+# which comes before /usr/share/omarchy/bin on PATH, so Omarchy's idle timer and
+# its menu start this instead of the terminal-text screensaver.
+#
+# Mirrors Omarchy's own launcher: one fullscreen window per monitor, each on
+# its own special workspace, class org.omarchy.screensaver (so Omarchy's window
+# rules and idle/lock logic treat it as the screensaver).
+#
+# Settings (optional) in ~/.config/album-art-screensaver.conf:
+#   ART_DIR=/path/to/images    INTERVAL=60
+
+self="$0"; [[ $self == */* ]] || self="$(command -v "$self")"
+PROJECT="$(cd "$(dirname "$(readlink -f "$self")")/.." && pwd)"
+BIN="$PROJECT/build/album-art-screensaver"
+ART_DIR="$PROJECT/art"
+INTERVAL=60
+CONF="$HOME/.config/album-art-screensaver.conf"
+[[ -f $CONF ]] && source "$CONF"
+
+ORIGINAL=/usr/share/omarchy/bin/omarchy-launch-screensaver
+
+# Missing binary or art: fall back to Omarchy's own screensaver.
+if [[ ! -x $BIN ]] || ! compgen -G "$ART_DIR/*.[jJpPwW]*" >/dev/null; then
+  exec "$ORIGINAL" "$@"
+fi
+
+# Already running? (Check real windows/processes, not command lines.)
+pgrep -x album-art-scree >/dev/null && exit 0
+hyprctl clients -j | SCREENSAVER=org.omarchy.screensaver jq -e 'any(.[]; .class == env.SCREENSAVER)' >/dev/null && exit 0
+
+# Respect Omarchy's "screensaver off" toggle unless forced.
+if omarchy-toggle-enabled screensaver-off && [[ $1 != "force" ]]; then
+  exit 1
+fi
+
+focused=$(omarchy-hyprland-monitor-focused)
+
+hypr_focus_monitor() {
+  hyprctl dispatch "hl.dsp.focus({ monitor = \"$1\" })" >/dev/null 2>&1 || hyprctl dispatch focusmonitor "$1" >/dev/null
+}
+
+hypr_exec() {
+  local command
+  printf -v command '%q ' "$@"
+  hyprctl dispatch "hl.dsp.exec_cmd([[[workspace $workspace] $command]])" >/dev/null 2>&1 ||
+    hyprctl dispatch exec -- "[workspace $workspace]" bash -lc "$command" >/dev/null
+}
+
+SOCKET="$XDG_RUNTIME_DIR/hypr/$HYPRLAND_INSTANCE_SIGNATURE/.socket2.sock"
+exec {events}< <(socat -U - "UNIX-CONNECT:$SOCKET" 2>/dev/null)
+
+wait_for_screensaver_window() {
+  local line deadline=$((SECONDS + 5))
+  while ((SECONDS < deadline)) && IFS= read -r -t $((deadline - SECONDS)) -u "$events" line; do
+    [[ $line == openwindow\>\>*,org.omarchy.screensaver,* ]] && return 0
+  done
+}
+
+while read -r m special; do
+  hypr_focus_monitor "$m"
+  workspace=${special:-special:screensaver-$m}
+  hypr_exec "$BIN" --dir "$ART_DIR" --interval "$INTERVAL"
+  wait_for_screensaver_window
+done < <(hyprctl monitors -j | jq -r '.[] | "\(.name) \(.specialWorkspace.name)"')
+
+hypr_focus_monitor "$focused"
+
+# Hand focus back to the monitor that had it once every screensaver has closed.
+(
+  while hyprctl clients -j | SCREENSAVER=org.omarchy.screensaver jq -e 'any(.[]; .mapped and .class == env.SCREENSAVER)' >/dev/null; do
+    IFS= read -r -u "$events" line || exit
+  done
+  hypr_focus_monitor "$focused"
+) >/dev/null 2>&1 &
